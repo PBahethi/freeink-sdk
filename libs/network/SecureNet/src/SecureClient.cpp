@@ -1,5 +1,7 @@
 #include "SecureClient.h"
 
+#include <cstring>
+
 // wolfSSL is only pulled in when explicitly enabled. This keeps the default SDK
 // build free of the wolfSSL dependency while leaving a single, well-defined
 // integration point for the TLS 1.3 transport.
@@ -169,19 +171,34 @@ bool SecureClient::runPeerCheck(const char* host, uint16_t port) {
   return false;
 #else
   auto* ssl = static_cast<WOLFSSL*>(_ssl);
-  WOLFSSL_X509_CHAIN* chain = wolfSSL_get_peer_chain(ssl);
-  const int count = chain ? wolfSSL_get_chain_count(chain) : 0;
-  if (count <= 0) return false;
+  // The leaf is the certificate the handshake authenticated (KEEP_PEER_CERT, full size).
+  // The session chain is only a source of intermediates: wolfSSL silently leaves out
+  // certificates of MAX_X509_SIZE or more there, so its first entry may not be the leaf.
+  WOLFSSL_X509* peer = wolfSSL_get_peer_certificate(ssl);
+  int leafLen = 0;
+  const unsigned char* leaf = peer ? wolfSSL_X509_get_der(peer, &leafLen) : nullptr;
+  if (!leaf || leafLen <= 0) {
+    if (peer) wolfSSL_X509_free(peer);
+    return false;
+  }
   constexpr int MAX_CHAIN = 8;
   PeerCert certs[MAX_CHAIN];
-  const int n = count < MAX_CHAIN ? count : MAX_CHAIN;
-  for (int i = 0; i < n; i++) {
-    certs[i].der = wolfSSL_get_chain_cert(chain, i);
+  int n = 0;
+  certs[n++] = {leaf, static_cast<size_t>(leafLen)};
+  WOLFSSL_X509_CHAIN* chain = wolfSSL_get_peer_chain(ssl);
+  const int count = chain ? wolfSSL_get_chain_count(chain) : 0;
+  for (int i = 0; i < count && n < MAX_CHAIN; i++) {
+    const unsigned char* der = wolfSSL_get_chain_cert(chain, i);
     const int len = wolfSSL_get_chain_length(chain, i);
-    if (!certs[i].der || len <= 0) return false;
-    certs[i].len = static_cast<size_t>(len);
+    if (!der || len <= 0) continue;
+    // Skip the stored copy of the leaf; anything else is passed on, and a chain that
+    // doesn't link up from the real leaf fails the policy's own verification.
+    if (len == leafLen && memcmp(der, leaf, static_cast<size_t>(len)) == 0) continue;
+    certs[n++] = {der, static_cast<size_t>(len)};
   }
-  return _peerCheck(host, port, certs, static_cast<size_t>(n), _peerCheckCtx);
+  const bool ok = _peerCheck(host, port, certs, static_cast<size_t>(n), _peerCheckCtx);
+  wolfSSL_X509_free(peer);
+  return ok;
 #endif
 }
 
