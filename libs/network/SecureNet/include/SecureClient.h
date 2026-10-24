@@ -24,6 +24,17 @@
 
 namespace freeink {
 
+// One certificate of the peer's chain, DER-encoded, as the server sent it.
+struct PeerCert {
+  const uint8_t* der;
+  size_t len;
+};
+
+// Optional application trust policy: called after the TLS handshake and before
+// connect() returns, with the chain (leaf first). Returning false closes the
+// connection and connect() fails; no application data has been sent by then.
+using PeerCheck = bool (*)(const char* host, uint16_t port, const PeerCert* chain, size_t count, void* ctx);
+
 class SecureClient : public Client {
  public:
   SecureClient() = default;
@@ -32,6 +43,11 @@ class SecureClient : public Client {
   // Certificate / verification configuration (applied before connect()).
   void setCACert(const char* rootCA);
   void setInsecure();  // skip peer verification (testing only)
+  // Overrides setCACert()/setInsecure() while set; nullptr removes it.
+  void setPeerCheck(PeerCheck check, void* ctx) {
+    _peerCheck = check;
+    _peerCheckCtx = ctx;
+  }
 
   // Connect and perform a TLS 1.3 handshake to host:port (uses the SNI host).
   int connect(IPAddress ip, uint16_t port) override;
@@ -53,10 +69,14 @@ class SecureClient : public Client {
 
  private:
   int connectWithMethod(const char* host, uint16_t port, void* method, const char* label);
+  bool runPeerCheck(const char* host, uint16_t port);
 
   WiFiClient _transport;
   const char* _rootCA = nullptr;
   bool _insecure = false;
+  PeerCheck _peerCheck = nullptr;
+  void* _peerCheckCtx = nullptr;
+  bool _peerRejected = false;  // the last connect failed the peer check: don't retry
   void* _ssl = nullptr;  // WOLFSSL* (opaque to keep wolfSSL headers out of here)
   void* _ctx = nullptr;  // WOLFSSL_CTX*
   bool _connected = false;

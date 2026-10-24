@@ -82,7 +82,10 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   }
   _ctx = ctx;
 
-  if (_insecure) {
+  if (_peerCheck) {
+    // The application judges the chain after the handshake (see runPeerCheck).
+    wolfSSL_CTX_set_verify(ctx, WOLFSSL_VERIFY_NONE, nullptr);
+  } else if (_insecure) {
     wolfSSL_CTX_set_verify(ctx, WOLFSSL_VERIFY_NONE, nullptr);
   } else if (_rootCA) {
     wolfSSL_CTX_load_verify_buffer(ctx, reinterpret_cast<const unsigned char*>(_rootCA),
@@ -143,6 +146,12 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
     }
     delay(5);
   }
+  if (_peerCheck && !runPeerCheck(host, port)) {
+    if (Serial) Serial.printf("[SecureClient] peer rejected by the trust policy (%s): %s:%u\n", label, host, port);
+    _peerRejected = true;
+    stop();
+    return 0;
+  }
   _connected = true;
   if (Serial) {
     Serial.printf("[SecureClient] handshake ok (%s): %s / %s in %lu ms\n", label, wolfSSL_get_version(ssl),
@@ -151,12 +160,39 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   return 1;
 }
 
+bool SecureClient::runPeerCheck(const char* host, uint16_t port) {
+#if !defined(SESSION_CERTS)
+  // The peer chain is only kept with SESSION_CERTS; without it nothing can be checked.
+  if (Serial) Serial.println("[SecureClient] peer check needs wolfSSL built with SESSION_CERTS");
+  (void)host;
+  (void)port;
+  return false;
+#else
+  auto* ssl = static_cast<WOLFSSL*>(_ssl);
+  WOLFSSL_X509_CHAIN* chain = wolfSSL_get_peer_chain(ssl);
+  const int count = chain ? wolfSSL_get_chain_count(chain) : 0;
+  if (count <= 0) return false;
+  constexpr int MAX_CHAIN = 8;
+  PeerCert certs[MAX_CHAIN];
+  const int n = count < MAX_CHAIN ? count : MAX_CHAIN;
+  for (int i = 0; i < n; i++) {
+    certs[i].der = wolfSSL_get_chain_cert(chain, i);
+    const int len = wolfSSL_get_chain_length(chain, i);
+    if (!certs[i].der || len <= 0) return false;
+    certs[i].len = static_cast<size_t>(len);
+  }
+  return _peerCheck(host, port, certs, static_cast<size_t>(n), _peerCheckCtx);
+#endif
+}
+
 int SecureClient::connect(const char* host, uint16_t port) {
   // Negotiate the highest mutually supported version rather than pinning TLS 1.3:
   // self-hosted / Let's Encrypt nginx often tops out at TLS 1.2, and a 1.3-only
   // client fails those handshakes outright. v23 still selects 1.3 when the peer
   // offers it (WOLFSSL_TLS13 is enabled) and falls back to 1.2 otherwise.
+  _peerRejected = false;
   if (connectWithMethod(host, port, wolfSSLv23_client_method(), "auto")) return 1;
+  if (_peerRejected) return 0;  // a trust decision, not a protocol mismatch
 
   // Some TLS 1.2-only servers are intolerant of a TLS 1.3-capable ClientHello
   // and abort with a fatal handshake_failure alert. Retry with an explicit
