@@ -71,6 +71,11 @@ public:
     //     a board with a gauge but no charger IC (e.g. X3) still reports it.
     bool isCharging() const;
 
+    // True when a charger or USB host supplies power, read from a charger IC
+    // (BQ25896 power-good and VBUS) in one register read. known is false on
+    // boards without one.
+    bool readExternalPower(bool& known) const;
+
     // Percentage from a millivolt value, off a standard 1S Li-ion discharge
     // curve. The result is always a multiple of 10: voltage cannot resolve a
     // Li-ion pack any finer than that, and pretending otherwise just produces a

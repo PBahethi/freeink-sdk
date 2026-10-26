@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <BoardConfig.h>
+#include <Bq25896Status.h>
 #include <M5Pm1.h>
 #include <esp_idf_version.h>
 #if ESP_IDF_VERSION_MAJOR < 5
@@ -278,8 +279,7 @@ bool readGaugeCharging(bool& known) {
     uint8_t status = 0;
     if (readReg8(g.chargerAddr, BQ25896_REG_STATUS, status)) {
       known = true;
-      const uint8_t chrg = (status >> 3) & 0x03;
-      return chrg == 0x01 || chrg == 0x02;
+      return decodeBq25896Reg0B(status).charging;
     }
   }
   uint16_t raw = 0;
@@ -289,6 +289,14 @@ bool readGaugeCharging(bool& known) {
   }
   known = false;
   return false;
+}
+
+// External power from the charger IC's power-good and VBUS status; unknown without one.
+bool readChargerExternalPower(bool& known) {
+  const auto& g = BoardConfig::ACTIVE.batteryGauge;
+  uint8_t status = 0;
+  known = g.chargerAddr != 0 && readReg8(g.chargerAddr, BQ25896_REG_STATUS, status);
+  return known && decodeBq25896Reg0B(status).externalPower();
 }
 }  // namespace
 #endif  // FREEINK_BATTERY_I2C_GAUGE
@@ -409,6 +417,9 @@ BatteryMonitor::Status BatteryMonitor::readStatus() const {
     }
     status.chargingKnown = chargingKnown;
     status.charging = charging;
+    bool externalKnown = false;
+    status.externalPower = readChargerExternalPower(externalKnown);
+    status.externalPowerKnown = externalKnown;
     return status;
   }
 #endif
@@ -464,6 +475,14 @@ uint16_t BatteryMonitor::readMillivolts() const {
 
 double BatteryMonitor::readVolts() const {
   return static_cast<double>(readMillivolts()) / 1000.0;
+}
+
+bool BatteryMonitor::readExternalPower(bool& known) const {
+#if FREEINK_BATTERY_I2C_GAUGE
+  if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) return readChargerExternalPower(known);
+#endif
+  known = false;
+  return false;
 }
 
 bool BatteryMonitor::isCharging() const {
