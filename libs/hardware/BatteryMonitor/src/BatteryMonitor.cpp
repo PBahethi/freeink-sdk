@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <initializer_list>  // BoardConfig.h range-for over the latch pins
 #include <BoardConfig.h>
+#include <Bq25896Status.h>
 #include <M5Pm1.h>
 #include <esp_idf_version.h>
 #if ESP_IDF_VERSION_MAJOR < 5
@@ -806,6 +807,9 @@ BatteryMonitor::Status BatteryMonitor::readStatus() const {
     }
     status.chargingKnown = chargingKnown;
     status.charging = charging;
+    bool externalKnown = false;
+    status.externalPower = readChargerExternalPower(externalKnown);
+    status.externalPowerKnown = externalKnown;
     return status;
   }
 #endif
@@ -878,6 +882,14 @@ uint16_t BatteryMonitor::readMillivolts() const {
 
 double BatteryMonitor::readVolts() const {
   return static_cast<double>(readMillivolts()) / 1000.0;
+}
+
+bool BatteryMonitor::readExternalPower(bool& known) const {
+#if FREEINK_BATTERY_I2C_GAUGE
+  if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) return readChargerExternalPower(known);
+#endif
+  known = false;
+  return false;
 }
 
 bool BatteryMonitor::isCharging() const {

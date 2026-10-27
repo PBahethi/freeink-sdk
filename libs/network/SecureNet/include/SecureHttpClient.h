@@ -66,6 +66,11 @@ class SecureHttpClient {
   // Skip peer verification (SecureClient does likewise). Required today because
   // the wolfSSL transport has no CA bundle wired up; see setCACert().
   void setInsecure() { _insecure = true; }
+  // Application trust policy for https (see SecureClient::setPeerCheck); wins over the above.
+  void setPeerCheck(PeerCheck check, void* ctx) {
+    _peerCheck = check;
+    _peerCheckCtx = ctx;
+  }
   // See SecureClient::setReserveFullRecord(). Applies to https connections.
   void setReserveFullRecord(bool on) { _secure.setReserveFullRecord(on); }
   // Verify against a single PEM root. Clears the insecure flag.
@@ -435,6 +440,7 @@ class SecureHttpClient {
       } else if (_rootCA) {
         _secure.setCACert(_rootCA);
       }
+      _secure.setPeerCheck(_peerCheck, _peerCheckCtx);
       _secure.setTimeout(_timeoutMs);
       _secure.setAbortCallback(shouldAbort);
       if (!_secure.connect(_host.c_str(), _port)) {
@@ -618,6 +624,8 @@ class SecureHttpClient {
   std::string _authUser;
   std::string _authPass;
   bool _insecure = false;
+  PeerCheck _peerCheck = nullptr;
+  void* _peerCheckCtx = nullptr;
   int _followRedirects = 0;
   bool _allowRedirectDowngrade = false;
   ProgressCallback _progress;

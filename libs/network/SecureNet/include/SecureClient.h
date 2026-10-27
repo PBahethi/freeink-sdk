@@ -27,6 +27,24 @@
 
 namespace freeink {
 
+// One certificate of the peer's chain, DER-encoded, as the server sent it.
+struct PeerCert {
+  const uint8_t* der;
+  size_t len;
+};
+
+// Optional application trust policy: called after the TLS handshake and before
+// connect() returns, with the chain (leaf first). Returning false closes the
+// connection and connect() fails; no application data has been sent by then.
+//
+// SECURITY: wolfSSL runs with WOLFSSL_VERIFY_NONE while a check is set. The
+// handshake still proves the server holds chain[0]'s private key, but nothing
+// else is verified: the remaining certificates are unauthenticated data. The
+// policy must itself check every signature up to a trusted root, CA flags,
+// validity dates and the host name, or pin chain[0]'s key. Returning true on
+// anything less accepts a man in the middle.
+using PeerCheck = bool (*)(const char* host, uint16_t port, const PeerCert* chain, size_t count, void* ctx);
+
 class SecureClient : public Client {
  public:
   SecureClient() = default;
@@ -38,6 +56,11 @@ class SecureClient : public Client {
   // Certificate / verification configuration (applied before connect()).
   void setCACert(const char* rootCA);
   void setInsecure();  // skip peer verification (testing only)
+  // Overrides setCACert()/setInsecure() while set; nullptr removes it.
+  void setPeerCheck(PeerCheck check, void* ctx) {
+    _peerCheck = check;
+    _peerCheckCtx = ctx;
+  }
 
   // Polled during connect(): between the TCP connect and the handshake, on
   // every handshake round-trip, and between the two handshake attempts. A
@@ -81,6 +104,7 @@ class SecureClient : public Client {
 
  private:
   int connectWithMethod(const char* host, uint16_t port, void* method, const char* label);
+  bool runPeerCheck(const char* host, uint16_t port);
 
   // Polls _shouldAbort and latches _aborted so callers can tell a cancel from
   // a failure after connect() returns 0.
@@ -93,6 +117,9 @@ class SecureClient : public Client {
   void* _recordBuf = nullptr;  // full-record buffer this connection owns, if any
   const char* _rootCA = nullptr;
   bool _insecure = false;
+  PeerCheck _peerCheck = nullptr;
+  void* _peerCheckCtx = nullptr;
+  bool _peerRejected = false;  // the last connect failed the peer check: don't retry
   void* _ssl = nullptr;  // WOLFSSL* (opaque to keep wolfSSL headers out of here)
   void* _ctx = nullptr;  // WOLFSSL_CTX*
   bool _connected = false;
