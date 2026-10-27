@@ -6,7 +6,16 @@
 // build free of the wolfSSL dependency while leaving a single, well-defined
 // integration point for the TLS 1.3 transport.
 #if defined(FREEINK_NET_WOLFSSL)
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <wolfssl/ssl.h>
+#include <wolfssl/wolfcrypt/memory.h>
+// ssl->max_fragment, to skip the full-record buffer when small records were agreed.
+#include <wolfssl/internal.h>
+
+#include <atomic>
+#include <cstdlib>
+#include <cstring>
 #endif
 
 namespace freeink {
@@ -27,6 +36,47 @@ void SecureClient::setInsecure() { _insecure = true; }
 #if defined(FREEINK_NET_WOLFSSL)
 
 namespace {
+// Full-record buffer lent to wolfSSL (see setReserveFullRecord). wolfSSL frees
+// its grown input buffer after every record and allocates a new one for the
+// next; the allocator hook hands it this block instead, so a download needs a
+// ~16.4KB contiguous block once, right after the handshake, not per record.
+// Only the owning task borrows it, so a connection on another task can never
+// hold it when the owner frees it.
+constexpr size_t kRecordBufSize = (1 << 14) + 256 + 64;  // largest record + header/alignment slack
+constexpr size_t kLendMin = 4096;                         // only record-sized requests take it
+std::atomic<void*> g_recordBuf{nullptr};
+std::atomic<TaskHandle_t> g_recordBufOwner{nullptr};
+std::atomic<bool> g_recordBufLent{false};
+
+void* lendMalloc(size_t size) {
+  void* buf = g_recordBuf.load();
+  bool expected = false;
+  if (buf && size > kLendMin && size <= kRecordBufSize && g_recordBufOwner.load() == xTaskGetCurrentTaskHandle() &&
+      g_recordBufLent.compare_exchange_strong(expected, true)) {
+    return buf;
+  }
+  return malloc(size);
+}
+
+void lendFree(void* ptr) {
+  if (ptr && ptr == g_recordBuf.load()) {
+    g_recordBufLent = false;
+    return;
+  }
+  free(ptr);
+}
+
+void* lendRealloc(void* ptr, size_t size) {
+  if (!ptr || ptr != g_recordBuf.load()) return realloc(ptr, size);
+  if (size <= kRecordBufSize) return ptr;
+  void* grown = malloc(size);
+  if (grown) {
+    memcpy(grown, ptr, kRecordBufSize);
+    g_recordBufLent = false;
+  }
+  return grown;
+}
+
 // Bridge wolfSSL's I/O to the underlying WiFiClient transport.
 int wcSend(WOLFSSL* /*ssl*/, char* buf, int sz, void* ctx) {
   auto* t = static_cast<WiFiClient*>(ctx);
@@ -70,9 +120,14 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   const uint32_t started = millis();
   stop();
   const uint32_t timeoutMs = getTimeout();
+  if (abortRequested()) return 0;
   _transport.setConnectionTimeout(timeoutMs);
   if (!_transport.connect(host, port)) {
     if (Serial) Serial.printf("[SecureClient] TCP connect failed (%s): %s:%u\n", label, host, port);
+    return 0;
+  }
+  if (abortRequested()) {
+    _transport.stop();
     return 0;
   }
 
@@ -138,6 +193,11 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
       stop();
       return 0;
     }
+    if (abortRequested()) {
+      if (Serial) Serial.printf("[SecureClient] handshake aborted by caller (%s)\n", label);
+      stop();
+      return 0;
+    }
     if (static_cast<int32_t>(millis() - deadline) >= 0) {
       if (Serial) {
         Serial.printf("[SecureClient] handshake timeout (%s): last err %d, transport %s, free heap %u\n", label, err,
@@ -155,6 +215,22 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
     return 0;
   }
   _connected = true;
+  bool smallRecords = false;
+#ifdef HAVE_MAX_FRAGMENT
+  // Set below MAX_RECORD_SIZE only when the server accepted max_fragment_length.
+  smallRecords = ssl->max_fragment < MAX_RECORD_SIZE;
+#endif
+  if (_reserveFullRecord && !smallRecords && !g_recordBuf.load()) {
+    static const bool hooked = wolfSSL_SetAllocators(lendMalloc, lendFree, lendRealloc) == 0;
+    _recordBuf = hooked ? malloc(kRecordBufSize) : nullptr;
+    if (_recordBuf) {
+      g_recordBufOwner = xTaskGetCurrentTaskHandle();
+      g_recordBuf = _recordBuf;
+    } else if (Serial) {
+      Serial.printf("[SecureClient] no full-record buffer (hook %d), max block %u\n", hooked,
+                    (unsigned)ESP.getMaxAllocHeap());
+    }
+  }
   if (Serial) {
     Serial.printf("[SecureClient] handshake ok (%s): %s / %s in %lu ms\n", label, wolfSSL_get_version(ssl),
                   wolfSSL_get_cipher(ssl), (unsigned long)(millis() - started));
@@ -200,9 +276,14 @@ bool SecureClient::runPeerCheck(const char* host, uint16_t port) {
   wolfSSL_X509_free(peer);
   return ok;
 #endif
+bool SecureClient::abortRequested() {
+  if (!_shouldAbort || !_shouldAbort()) return false;
+  _aborted = true;
+  return true;
 }
 
 int SecureClient::connect(const char* host, uint16_t port) {
+  _aborted = false;
   // Negotiate the highest mutually supported version rather than pinning TLS 1.3:
   // self-hosted / Let's Encrypt nginx often tops out at TLS 1.2, and a 1.3-only
   // client fails those handshakes outright. v23 still selects 1.3 when the peer
@@ -210,6 +291,7 @@ int SecureClient::connect(const char* host, uint16_t port) {
   _peerRejected = false;
   if (connectWithMethod(host, port, wolfSSLv23_client_method(), "auto")) return 1;
   if (_peerRejected) return 0;  // a trust decision, not a protocol mismatch
+  if (_aborted) return 0;
 
   // Some TLS 1.2-only servers are intolerant of a TLS 1.3-capable ClientHello
   // and abort with a fatal handshake_failure alert. Retry with an explicit
@@ -245,7 +327,10 @@ int SecureClient::read(uint8_t* buf, size_t size) {
   // A mid-stream failure is invisible to callers (they just see the connection
   // die); the error code distinguishes an OOM (MEMORY_E -125) from a peer
   // drop or MAC failure.
-  if (Serial) Serial.printf("[SecureClient] read failed: %d, free heap %u\n", err, (unsigned)ESP.getFreeHeap());
+  if (Serial) {
+    Serial.printf("[SecureClient] read failed: %d, free heap %u, max block %u\n", err, (unsigned)ESP.getFreeHeap(),
+                  (unsigned)ESP.getMaxAllocHeap());
+  }
   _connected = false;
   return -1;
 }
@@ -257,6 +342,18 @@ int SecureClient::available() {
 
 void SecureClient::stop() {
   if (_ssl) { wolfSSL_free(static_cast<WOLFSSL*>(_ssl)); _ssl = nullptr; }
+  if (_recordBuf) {
+    // wolfSSL_free() returned the buffer if it was lent; freeing a lent one
+    // would leave wolfSSL with a dangling pointer, so leak it instead.
+    g_recordBuf = nullptr;
+    g_recordBufOwner = nullptr;
+    if (g_recordBufLent.exchange(false)) {
+      if (Serial) Serial.println("[SecureClient] full-record buffer still lent at stop; not freed");
+    } else {
+      free(_recordBuf);
+    }
+    _recordBuf = nullptr;
+  }
   if (_ctx) { wolfSSL_CTX_free(static_cast<WOLFSSL_CTX*>(_ctx)); _ctx = nullptr; }
   _transport.stop();
   _connected = false;
