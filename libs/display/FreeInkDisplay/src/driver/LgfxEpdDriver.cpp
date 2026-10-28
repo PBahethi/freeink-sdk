@@ -8,6 +8,7 @@
 #include <M5GFX.h>  // pulls LovyanGFX; added to lib_deps only on the LilyGo env
 #include <esp_heap_caps.h>
 #include <lgfx/v1/platforms/esp32/Bus_EPD.h>
+
 #include <lgfx/v1/platforms/esp32/Panel_EPD.hpp>
 #endif
 
@@ -154,6 +155,23 @@ void fillCanvasBW(const uint8_t* fb) {
   }
 }
 
+// Same as fillCanvasBW for one rectangle only. Columns widen to whole bytes.
+void fillCanvasBWRect(const uint8_t* fb, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+  if (!g_canvas) return;
+  auto* dst = static_cast<uint8_t*>(g_canvas->getBuffer());
+  if (!dst) return;
+  const uint16_t b0 = x / 8;
+  const uint16_t b1 = static_cast<uint16_t>((x + w + 7) / 8);
+  for (uint16_t row = y; row < y + h; ++row) {
+    const uint8_t* src = fb + static_cast<uint32_t>(row) * g_wb;
+    uint8_t* drow = dst + static_cast<uint32_t>(row) * g_w;
+    for (uint16_t bx = b0; bx < b1 && bx < g_wb; ++bx) {
+      const uint8_t b = src[bx];
+      for (uint8_t bit = 0; bit < 8; ++bit) drow[bx * 8 + bit] = (b & (0x80 >> bit)) ? kGrayWhite : kGrayBlack;
+    }
+  }
+}
+
 // Overlay the buffered LSB/MSB planes onto the B/W canvas the base push left
 // behind, darkening only the pixels a plane actually selects.
 //
@@ -197,12 +215,32 @@ void overlayCanvasGray() {
 // page refreshed with those modes flashed when its AA pass ran.
 lgfx::epd_mode::epd_mode_t g_lastBaseEpdMode = lgfx::epd_mode::epd_fast;
 
-void pushCanvas(lgfx::epd_mode::epd_mode_t epdMode) {
+// Animation mode (flipbooks): Fast refreshes use epd_fastest and return without
+// the trailing wait; the leading wait of the next push still serialises them.
+bool g_animation = false;
+
+lgfx::epd_mode::epd_mode_t baseModeFor(RefreshMode m) {
+  return g_animation && m == RefreshMode::Fast ? lgfx::epd_mode::epd_fastest : epdModeFor(m);
+}
+
+void pushCanvas(lgfx::epd_mode::epd_mode_t epdMode, const bool waitAfter = true) {
   if (!g_canvas) return;
   g_dev.waitDisplay();
   g_dev.setEpdMode(epdMode);
   g_canvas->pushSprite(0, 0);  // commits to the panel; Panel_EPD runs the refresh
+  if (waitAfter) g_dev.waitDisplay();
+}
+
+// Pushes one rectangle of the canvas; Panel_EPD only drives the range it was given.
+void pushCanvasRect(lgfx::epd_mode::epd_mode_t epdMode, uint16_t x, uint16_t y, uint16_t w, uint16_t h,
+                    const bool waitAfter) {
+  if (!g_canvas) return;
   g_dev.waitDisplay();
+  g_dev.setEpdMode(epdMode);
+  g_dev.setClipRect(x, y, w, h);
+  g_canvas->pushSprite(0, 0);
+  g_dev.clearClipRect();
+  if (waitAfter) g_dev.waitDisplay();
 }
 
 }  // namespace
@@ -234,13 +272,44 @@ void LgfxEpdDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   (void)prev;
 #if FREEINK_DRIVER_LGFX_EPD
   fillCanvasBW(fb);  // expand the 1-bpp frame into the gray canvas
-  g_lastBaseEpdMode = epdModeFor(mode);
-  pushCanvas(g_lastBaseEpdMode);
+  g_lastBaseEpdMode = baseModeFor(mode);
+  const bool early = g_animation && mode == RefreshMode::Fast && !turnOff;
+  pushCanvas(g_lastBaseEpdMode, !early);
   if (turnOff) g_dev.sleep();
 #else
   (void)fb;
   (void)mode;
   (void)turnOff;
+#endif
+}
+
+void LgfxEpdDriver::displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, uint16_t x, uint16_t y,
+                                  uint16_t w, uint16_t h, bool turnOff) {
+#if FREEINK_DRIVER_LGFX_EPD
+  if (!fb || w == 0 || h == 0 || x >= g_w || y >= g_h) return;
+  if (x + w > g_w) w = static_cast<uint16_t>(g_w - x);
+  if (y + h > g_h) h = static_cast<uint16_t>(g_h - y);
+  // Columns widen to whole bytes so the canvas and the 1-bpp frame agree.
+  const uint16_t x0 = static_cast<uint16_t>(x & ~7u);
+  uint16_t x1 = static_cast<uint16_t>((x + w + 7) & ~7u);
+  if (x1 > g_w) x1 = g_w;
+  fillCanvasBWRect(fb, x0, y, static_cast<uint16_t>(x1 - x0), h);
+  g_lastBaseEpdMode = baseModeFor(RefreshMode::Fast);
+  pushCanvasRect(g_lastBaseEpdMode, x0, y, static_cast<uint16_t>(x1 - x0), h, !g_animation || turnOff);
+  if (turnOff) g_dev.sleep();
+  (void)bus;
+  (void)prev;
+#else
+  PanelDriver::displayWindow(bus, fb, prev, x, y, w, h, turnOff);
+#endif
+}
+
+void LgfxEpdDriver::setAnimationMode(const bool on) {
+#if FREEINK_DRIVER_LGFX_EPD
+  if (!on) g_dev.waitDisplay();  // leave no refresh in flight for the next owner
+  g_animation = on;
+#else
+  (void)on;
 #endif
 }
 
@@ -312,6 +381,7 @@ void LgfxEpdDriver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
 void LgfxEpdDriver::deepSleep(EpdBus& bus) {
   (void)bus;
 #if FREEINK_DRIVER_LGFX_EPD
+  g_dev.waitDisplay();  // an animation-mode push may still be running
   g_dev.sleep();
 #endif
 }

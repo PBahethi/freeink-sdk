@@ -243,6 +243,8 @@ class FreeInkDisplay {
 
   // EXPERIMENTAL: Windowed update - display only a rectangular region
   void displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen = false);
+  // Animation hint for flipbook-style playback; see PanelDriver::setAnimationMode.
+  void setAnimationMode(bool on);
   void displayGrayBuffer(bool turnOffScreen = false, const unsigned char* lut = nullptr, bool factoryMode = false);
   void displayGrayCalibration(uint16_t customX, uint16_t customY, uint16_t customW, uint16_t customH);
 

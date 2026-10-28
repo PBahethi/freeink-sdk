@@ -54,6 +54,10 @@ class PanelDriver {
                              uint16_t h, bool turnOff) {
     display(bus, fb, prev, RefreshMode::Fast, turnOff);
   }
+  // Animation hint (flipbooks): a driver may use its fastest waveform for Fast
+  // refreshes and return before the panel finishes, so the caller can prepare the
+  // next frame meanwhile. Turning it off must leave the panel idle. Default: no-op.
+  virtual void setAnimationMode(bool on) { (void)on; }
 
   // True when displayStart() defers (returns true) rather than completing
   // inline. Lets the facade skip async scaffolding (shadow setup) on blocking

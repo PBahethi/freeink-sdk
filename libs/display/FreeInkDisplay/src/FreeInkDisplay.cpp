@@ -770,6 +770,11 @@ void FreeInkDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t 
 #endif
 }
 
+void FreeInkDisplay::setAnimationMode(const bool on) {
+  syncPendingAsync();
+  if (_driver) _driver->setAnimationMode(on);
+}
+
 void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* lut, bool factoryMode) {
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   Serial.printf("[EPD] displayGrayBuffer\n");
