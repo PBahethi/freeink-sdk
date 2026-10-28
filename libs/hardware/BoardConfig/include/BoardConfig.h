@@ -1367,9 +1367,12 @@ constexpr BoardProfile LILYGO_T5S3 = {
     0,  // displayControllerVariant: not probed on this panel
     // Bezel: this case sits closer over the glass at the sides than the X4's, so
     // the default 3px leaves the first and last characters of a line hard to
-    // read. Measured by eye on hardware in two passes (3 -> 6 -> 8); top/bottom
-    // are correct at the defaults. Compare the X4 Pro's 7px sides.
-    {9, 8, 3, 8}};
+    // read. Measured by eye on hardware in two passes (3 -> 6 -> 8). Bottom is
+    // 8, not the 3px default: Meshtastic's T5 S3 Pro port (meshtastic/firmware
+    // PR #10211, ED047TC1 driver) calibrated the ED047TC1's inactive edge at
+    // 8px left/right, 9px top and 8px bottom of the 960x540 frame, and the
+    // last rows of a 3px inset can fall in it. Compare the X4 Pro's 7px sides.
+    {9, 8, 8, 8}};
 
 // --- M5Paper v1.1 4.7" (ED047TC1 behind an IT8951E controller) — ESP32 --------
 // 540x960 16-gray panel driven through an IT8951E timing controller over SPI
