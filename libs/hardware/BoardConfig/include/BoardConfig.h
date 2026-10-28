@@ -1343,7 +1343,10 @@ constexpr BoardProfile LILYGO_T5S3 = {
     2.0f,
     PIN_UNASSIGNED,
     LILYGO_T5_PRO_GT911,  // GT911 touch (SDA39 SCL40 INT3 RST9, 0x5D, portrait sensor -> landscape panel)
-    {11, 5000, 8, true},  // backlight: BL_EN GPIO11, PWM 5 kHz / 8-bit, active-high
+    // backlight: BL_EN GPIO11, PWM 1 kHz / 8-bit, active-high. Was 5 kHz; T5 S3 Pro
+    // owners report the frontlight driver dims cleanly (no whine, no flicker steps)
+    // at or below ~1 kHz, and LEDC 1 kHz / 8-bit is well inside its clock range.
+    {11, 1000, 8, true},
     NO_AUDIO,
     NO_LEDS,
     NO_FLIP,
