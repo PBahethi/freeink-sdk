@@ -1116,6 +1116,12 @@ void InputManager::beginTouch() {
     beginFt6336u();
     return;
   }
+#if FREEINK_TOUCH_CST3XX
+  if (t.controller == BoardConfig::TouchController::Cst3xx) {
+    beginCst3xx();
+    return;
+  }
+#endif
   // CHSC6x: I2C bus only. The IRQ is left unconfigured — it's a brief pulse on
   // this controller, so detection polls I2C and gates on the frame's touch bit
   // instead (see decodeChsc6xFrame / updateTouchFromIrq).
@@ -1151,6 +1157,10 @@ uint8_t InputManager::serviceTouch() {
     pollFt5x06(now);
   } else if (t.controller == BoardConfig::TouchController::Ft6336u) {
     pollFt6336u(now);
+#if FREEINK_TOUCH_CST3XX
+  } else if (t.controller == BoardConfig::TouchController::Cst3xx) {
+    pollCst3xx(now);
+#endif
   } else {
     updateTouchFromIrq(now, 0);  // detection polls I2C; the IRQ is unused now
     // Synthesized confirm tracks an actually-detected press, not the IRQ line.
@@ -1920,4 +1930,152 @@ void InputManager::pollGt911(const unsigned long now) {
   gt911ClearStatus();  // GT911 requires clearing 0x814E after each read
 }
 
+#endif  // FREEINK_CAP_TOUCH
+
+// ---------------------------------------------------------------------------
+// Hynitron CST328 / CST3530 (LilyGo T-Deck Pro, I2C 0x1A).
+// Protocol from LilyGo's touch_hyn_core example (T-Deck-Pro branch
+// HD-V2-250915, hyn_cst3xx.c / hyn_cst66xx.c):
+//   CST328 : read 7 bytes at 16-bit reg 0xD000; valid when buf[6] == 0xAB;
+//            buf[5] & 0x7F = finger count; point 1: x = buf[1]<<4 | buf[3]>>4,
+//            y = buf[2]<<4 | buf[3]&0x0F, pressed when buf[0]&0x0F == 0x06.
+//            Acknowledge by writing 0xD0 0x00 0xAB.
+//   CST3530: read 9 bytes at 32-bit reg 0xD0070000; buf[2] = 0xFF for a
+//            position report, buf[3]&0x0F = fingers; point 1: x = buf[4] |
+//            (buf[7]&0x0F)<<8, y = buf[5] | (buf[7]&0xF0)<<4, down when
+//            buf[8]>>4 != 0. Checksum: sum16(0x55, buf[4..]) == buf[0]|buf[1]<<8.
+//            Acknowledge by writing 0xD0 0x00 0x02 0xAB.
+// The CST3530 sleeps on its own and NAKs I2C while asleep (LilyGo issue #37),
+// so reads are gated on the active-low IRQ unless a contact is in progress.
+// ---------------------------------------------------------------------------
+#if FREEINK_CAP_TOUCH && FREEINK_TOUCH_CST3XX
+bool InputManager::cstTransfer(const uint8_t* reg, uint8_t regLen, uint8_t* rbuf, uint8_t rlen) {
+  const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
+  Wire.beginTransmission(addr);
+  Wire.write(reg, regLen);
+  if (Wire.endTransmission(rlen == 0) != 0) return false;
+  if (rlen == 0) return true;
+  const uint8_t got = Wire.requestFrom(addr, rlen, static_cast<uint8_t>(true));
+  if (got != rlen) {
+    while (Wire.available()) Wire.read();
+    return false;
+  }
+  for (uint8_t i = 0; i < rlen; ++i) rbuf[i] = Wire.read();
+  return true;
+}
+
+void InputManager::beginCst3xx() {
+  const auto& t = BoardConfig::ACTIVE.touch;
+  if (t.sda < 0 || t.scl < 0) return;
+  Wire.begin(t.sda, t.scl, 400000);
+  Wire.setTimeOut(10);
+  if (t.irq >= 0) pinMode(t.irq, INPUT_PULLUP);
+  if (t.reset >= 0) {
+    pinMode(t.reset, OUTPUT);
+    digitalWrite(t.reset, LOW);
+    delay(10);
+    digitalWrite(t.reset, HIGH);
+    delay(80);
+  }
+  // Variant probe: the CST3530 answers the 32-bit report register with a
+  // frame whose checksum is valid (an idle frame sums to 0x0055); the CST328
+  // does not. Default to the CST328 map otherwise.
+  for (int attempt = 0; attempt < 3 && !touchDataEnabled; ++attempt) {
+    if (attempt > 0) delay(50);
+    Wire.beginTransmission(t.i2cAddress);
+    touchDataEnabled = (Wire.endTransmission() == 0);
+  }
+  if (!touchDataEnabled) return;
+  static const uint8_t reg66[] = {0xD0, 0x07, 0x00, 0x00};
+  uint8_t buf[9] = {};
+  if (cstTransfer(reg66, sizeof(reg66), buf, sizeof(buf))) {
+    const uint8_t fingers = buf[3] & 0x0F;
+    const uint8_t keys = buf[3] >> 4;
+    if (fingers + keys <= 1) {
+      uint16_t sum = 0x55;
+      for (uint8_t i = 0; i < (fingers + keys) * 5; ++i) sum += buf[4 + i];
+      cst66xx = sum == static_cast<uint16_t>(buf[0] | (buf[1] << 8));
+    }
+  }
+#if defined(ENABLE_SERIAL_LOG)
+  esp_rom_printf("[touch] Hynitron %s ready at 0x%02X\r\n", cst66xx ? "CST3530" : "CST328", t.i2cAddress);
+#endif
+}
+
+void InputManager::pollCst3xx(const unsigned long now) {
+  if (!touchDataEnabled) return;
+  const auto& t = BoardConfig::ACTIVE.touch;
+  if (t.irq >= 0 && digitalRead(t.irq) != LOW && !touchPressed) return;
+  if (now < touchReadAt) return;
+  touchReadAt = now + TOUCH_SAMPLE_DELAY_MS;
+
+  bool touching = false;
+  uint16_t rawX = 0, rawY = 0;
+  if (cst66xx) {
+    static const uint8_t reg[] = {0xD0, 0x07, 0x00, 0x00};
+    static const uint8_t ack[] = {0xD0, 0x00, 0x02, 0xAB};
+    uint8_t buf[9] = {};
+    if (!cstTransfer(reg, sizeof(reg), buf, sizeof(buf))) return;
+    cstTransfer(ack, sizeof(ack), nullptr, 0);
+    const uint8_t fingers = buf[3] & 0x0F;
+    const uint8_t keys = buf[3] >> 4;
+    if (buf[2] == 0xFF && fingers > 0 && keys == 0) {
+      uint16_t sum = 0x55;
+      for (uint8_t i = 0; i < 5; ++i) sum += buf[4 + i];
+      if (fingers == 1 && sum != static_cast<uint16_t>(buf[0] | (buf[1] << 8))) return;  // torn frame
+      rawX = static_cast<uint16_t>(buf[4] | ((buf[7] & 0x0F) << 8));
+      rawY = static_cast<uint16_t>(buf[5] | ((buf[7] & 0xF0) << 4));
+      touching = (buf[8] >> 4) != 0;
+    }
+  } else {
+    static const uint8_t reg[] = {0xD0, 0x00};
+    static const uint8_t ack[] = {0xD0, 0x00, 0xAB};
+    uint8_t buf[7] = {};
+    if (!cstTransfer(reg, sizeof(reg), buf, sizeof(buf))) return;
+    cstTransfer(ack, sizeof(ack), nullptr, 0);
+    if (buf[6] != 0xAB || buf[0] == 0xAB) return;  // no fresh report
+    const uint8_t fingers = buf[5] & 0x7F;
+    if (fingers > 0 && !(buf[5] & 0x80)) {
+      rawX = static_cast<uint16_t>((buf[1] << 4) | (buf[3] >> 4));
+      rawY = static_cast<uint16_t>((buf[2] << 4) | (buf[3] & 0x0F));
+      touching = (buf[0] & 0x0F) == 0x06;
+    }
+  }
+  applyTouchSample(touching, rawX, rawY, now);
+}
+
+// Shared press/move/release bookkeeping (same rules as pollFt6336u).
+void InputManager::applyTouchSample(const bool touching, const uint16_t rawX, const uint16_t rawY,
+                                    const unsigned long now) {
+  const auto& t = BoardConfig::ACTIVE.touch;
+  if (touching) {
+    const uint16_t sx = t.swapXY ? rawY : rawX;
+    const uint16_t sy = t.swapXY ? rawX : rawY;
+    if (sx > static_cast<uint16_t>(t.rawMaxX) || sy > static_cast<uint16_t>(t.rawMaxY)) return;
+    touchPoint.valid = true;
+    touchPoint.x = mapTouchAxis(sx, t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
+    touchPoint.y = mapTouchAxis(sy, t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
+    if (t.flipX) touchPoint.x = static_cast<uint16_t>((t.rawMaxX - t.rawMinX) - touchPoint.x);
+    if (t.flipY) touchPoint.y = static_cast<uint16_t>((t.rawMaxY - t.rawMinY) - touchPoint.y);
+    touchPoint.timestamp = now;
+    if (!touchPressed) {
+      touchPressedEvent = true;
+      touchDownPoint = touchPoint;
+      touchMovedBeyondTapSlop = false;
+    }
+    touchUpPoint = touchPoint;
+    const int dx = static_cast<int>(touchUpPoint.x) - static_cast<int>(touchDownPoint.x);
+    const int dy = static_cast<int>(touchUpPoint.y) - static_cast<int>(touchDownPoint.y);
+    if (absInt(dx) > TOUCH_TAP_SLOP_PX || absInt(dy) > TOUCH_TAP_SLOP_PX) touchMovedBeyondTapSlop = true;
+    touchPressed = true;
+  } else {
+    if (touchPressed) {
+      touchReleasedEvent = true;
+      lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
+      touchUpPoint = touchPoint;
+    }
+    touchPressed = false;
+    touchPoint.valid = false;
+  }
+}
 #endif  // FREEINK_CAP_TOUCH

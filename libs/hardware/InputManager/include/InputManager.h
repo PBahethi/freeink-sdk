@@ -314,6 +314,15 @@ class InputManager {
   void gt911ClearStatus();
   void beginFt6336u();
   void pollFt6336u(unsigned long now);
+  // Hynitron CST328 / CST3530 (T-Deck Pro). cst66xx = true for the CST3530
+  // (32-bit register map); false for the original CST328 (16-bit map).
+  void beginCst3xx();
+  void pollCst3xx(unsigned long now);
+  bool cstTransfer(const uint8_t* reg, uint8_t regLen, uint8_t* rbuf, uint8_t rlen);
+  void applyTouchSample(bool touching, uint16_t rawX, uint16_t rawY, unsigned long now);
+#if FREEINK_TOUCH_CST3XX
+  bool cst66xx = false;
+#endif
 
   enum class MultiTouchGestureState : uint8_t { Idle, Tracking, Blocked };
   struct TrackedTouchContact {

@@ -66,13 +66,16 @@
 #ifndef FREEINK_DEVICE_MURPHY_M4
 #define FREEINK_DEVICE_MURPHY_M4 0
 #endif
+#ifndef FREEINK_DEVICE_TDECKPRO
+#define FREEINK_DEVICE_TDECKPRO 0
+#endif
 
 // --- 2) Coherence: exactly one MCU family, at least one device ---------------
 #if !(FREEINK_DEVICE_X4 || FREEINK_DEVICE_X3 || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_M5 || FREEINK_DEVICE_MURPHY || \
       FREEINK_DEVICE_DELINK || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_STICKY ||            \
-      FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_MURPHY_M4)
+      FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_TDECKPRO)
 #error \
-    "FreeInk: no device selected. Pass at least one -DFREEINK_DEVICE_<NAME> (X4, X3, X4PRO, M5, MURPHY, DELINK, LILYGO, M5PAPER, STICKY, PAPERMONO, PAPERS3, MURPHY_M4) in your build env — see platformio.sample.ini."
+    "FreeInk: no device selected. Pass at least one -DFREEINK_DEVICE_<NAME> (X4, X3, X4PRO, M5, MURPHY, DELINK, LILYGO, M5PAPER, STICKY, PAPERMONO, PAPERS3, MURPHY_M4, TDECKPRO) in your build env — see platformio.sample.ini."
 #endif
 // Each device belongs to one MCU family; a binary targets exactly one. X3/X4 are
 // ESP32-C3; M5 PaperColor/Murphy/de-link/LilyGo are ESP32-S3; M5Paper v1.1 is the
@@ -82,7 +85,7 @@
 #define FREEINK_MCU_S3                                                                                    \
   (FREEINK_DEVICE_M5 || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_DELINK || FREEINK_DEVICE_LILYGO ||        \
    FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_PAPERS3 ||  \
-   FREEINK_DEVICE_MURPHY_M4)
+   FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_TDECKPRO)
 #define FREEINK_MCU_ESP32 (FREEINK_DEVICE_M5PAPER)
 #if (FREEINK_MCU_C3 + FREEINK_MCU_S3 + FREEINK_MCU_ESP32) != 1
 #error \
@@ -150,6 +153,16 @@
 #else
 #define FREEINK_DRIVER_UC8253_MURPHY 0
 #endif
+
+// LilyGo T-Deck Pro: GDEQ031T10 (3.1" 240x320) on a UC8253, OTP waveforms.
+#if FREEINK_DEVICE_TDECKPRO
+#define FREEINK_DRIVER_UC8253_TDECK 1
+#else
+#define FREEINK_DRIVER_UC8253_TDECK 0
+#endif
+
+// Hynitron CST328/CST3530 touch backend (InputManager), linked only where used.
+#define FREEINK_TOUCH_CST3XX FREEINK_DEVICE_TDECKPRO
 // LilyGo T5 S3 and M5Stack PaperS3: raw-parallel ED047TC1 via LovyanGFX (M5GFX).
 // External-bus driver; each board injects its own bus pins/power in an
 // LgfxEpdConfig (PaperS3's rails are plain GPIOs, LilyGo's ride a PMIC+expander).
@@ -175,12 +188,13 @@
 #ifndef FREEINK_CAP_TOUCH
 #define FREEINK_CAP_TOUCH                                                                               \
   (FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_STICKY || \
-   FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_MURPHY_M4)
+   FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_MURPHY_M4 || \
+   FREEINK_DEVICE_TDECKPRO)
 #endif
 #ifndef FREEINK_CAP_FRONTLIGHT
 #define FREEINK_CAP_FRONTLIGHT                                                                        \
   (FREEINK_DEVICE_DELINK || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_X4PRO || \
-   FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_MURPHY_M4)
+   FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_TDECKPRO)
 #endif
 // Warm/cool color-temperature frontlight: a second warm PWM channel on top of
 // the brightness one (FrontlightConfig::gpioWarm). Sub-capability of
@@ -239,7 +253,8 @@
 // share one C3 binary.
 #ifndef FREEINK_BATTERY_I2C_GAUGE
 #define FREEINK_BATTERY_I2C_GAUGE \
-  (FREEINK_DEVICE_X3 || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO)
+  (FREEINK_DEVICE_X3 || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO || \
+   FREEINK_DEVICE_TDECKPRO)
 #endif
 #ifndef FREEINK_CAP_COLOR
 #define FREEINK_CAP_COLOR (FREEINK_DEVICE_M5)
@@ -354,6 +369,7 @@ enum class Board : uint8_t {
   M5PaperV11,
   Sticky,
   PaperMono,
+  LilyGoTDeckPro,  // ESP32-S3, GDEQ031T10 UC8253 240x320 SPI e-paper, CST328/CST3530 touch, TCA8418 keys
   M5PaperS3,  // ESP32-S3 sibling of M5Paper v1.1: same ED047TC1 glass, no IT8951 — raw parallel via LovyanGFX
 };
 
@@ -390,7 +406,10 @@ enum class DisplayController : uint8_t {
 };
 
 // Optional capacitive touch controller.
-enum class TouchController : uint8_t { None, Chsc6x, Gt911, Ft5x06, Ft6336u };
+// Cst3xx = Hynitron CST328 (16-bit register map) or its drop-in successor
+// CST3530 (CST66xx family, 32-bit register map) at the same address; the
+// variant is told apart at runtime (T-Deck Pro v1.1 ships either).
+enum class TouchController : uint8_t { None, Chsc6x, Gt911, Ft5x06, Ft6336u, Cst3xx };
 
 // Optional audio output path. Murphy M3 ships an ES8388-compatible stereo
 // codec (I2S slave, control over the shared touch I2C bus) — the contract was
@@ -1543,6 +1562,46 @@ constexpr uint32_t MAX_FRAMEBUFFER_BYTES = cmax(
               cmax(FREEINK_DEVICE_PAPERS3 ? panelBytes(M5PAPER_S3) : 0u,
                    FREEINK_DEVICE_MURPHY_M4 ? panelBytes(MURPHY_M4) : 0u))));
 
+// --- LilyGo T-Deck Pro (H693, v1.0/v1.1) — ESP32-S3, 16 MB flash / 8 MB PSRAM ---
+// Pin map from LilyGo's T-Deck-Pro repo, branch HD-V2-250915,
+// examples/factory/utilities.h (https://github.com/Xinyuan-LilyGO/T-Deck-Pro).
+// Display, SD and the SX1262 share ONE SPI bus (SCK36 MOSI33 MISO47):
+// EPD CS34 DC35 RST16 BUSY37, SD CS48, LoRa CS3. holdPowerRails() deselects
+// the LoRa radio (CS3 HIGH) before the SD card or panel touch the bus.
+// I2C (SDA13 SCL14): CST328/CST3530 touch 0x1A (INT12 RST38), BHI260AP 0x28,
+// TCA8418 keyboard 0x34, BQ27220 gauge 0x55, DRV2605 haptics 0x5A (v1.1),
+// BQ25896 charger 0x6B. Panel front light GPIO45. Only BOOT (GPIO0) is a GPIO key.
+// The panel is 240x320 portrait (keyboard below), so the framebuffer is too.
+constexpr BoardProfile LILYGO_TDECK_PRO = {
+    Board::LilyGoTDeckPro,
+    "lilygo_tdeck_pro",
+    InputStyle::DigitalButtons,
+    DisplayController::UC8253,
+    240,
+    320,
+    {36, 33, 34, 35, 16, 37, PIN_UNASSIGNED},  // SCLK MOSI CS DC RST BUSY
+    0,                                         // displaySpiHz: driver default
+    // SD shares the display SPI (separateSpi=false). 20 MHz: three devices on one
+    // bus; raise after on-device testing.
+    {36, 47, 33, 48, PIN_UNASSIGNED, false, 20000000},
+    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 0, false},
+    PIN_UNASSIGNED,  // batteryAdc: I2C gauge below
+    PIN_UNASSIGNED,
+    2.0f,
+    PIN_UNASSIGNED,
+    // CST328/CST3530 report panel coordinates (0..239, 0..319). IRQ active-low;
+    // CST3530 auto-sleeps, so reads are IRQ-gated (LilyGo T-Deck-Pro issue #37).
+    {TouchController::Cst3xx, 13, 14, 12, 38, 0x1A, 0, 239, 0, 319, false, 0, true, false},
+    {45, 1000, 8, true},  // front light GPIO45, active-high PWM
+    NO_AUDIO,
+    NO_LEDS,
+    NO_FLIP,
+    NO_SDMMC,
+    {13, 14, 400000, 0x55, 0x6B},  // BQ27220 gauge + BQ25896 charger
+    NO_MIC,
+    NO_SENSORS,  // BHI260AP needs a firmware upload; later phase
+    1.0f};
+
 // Compile-time default device — the profile ACTIVE starts as. With a single
 // device in the build this is the only device; with several same-MCU devices it
 // is the boot default until the consumer calls selectDevice().
@@ -1558,6 +1617,8 @@ constexpr BoardProfile DEFAULT_DEVICE = MURPHY_M3;
 constexpr BoardProfile DEFAULT_DEVICE = DE_LINK;
 #elif FREEINK_DEVICE_LILYGO
 constexpr BoardProfile DEFAULT_DEVICE = LILYGO_T5S3;
+#elif FREEINK_DEVICE_TDECKPRO
+constexpr BoardProfile DEFAULT_DEVICE = LILYGO_TDECK_PRO;
 #elif FREEINK_DEVICE_M5PAPER
 constexpr BoardProfile DEFAULT_DEVICE = M5PAPER_V11;
 #elif FREEINK_DEVICE_PAPERS3
@@ -1621,6 +1682,11 @@ inline bool selectDevice(Board which) {
 #if FREEINK_DEVICE_LILYGO
     case Board::LilyGoT5S3:
       ACTIVE = LILYGO_T5S3;
+      break;
+#endif
+#if FREEINK_DEVICE_TDECKPRO
+    case Board::LilyGoTDeckPro:
+      ACTIVE = LILYGO_TDECK_PRO;
       break;
 #endif
 #if FREEINK_DEVICE_M5PAPER
@@ -1724,6 +1790,19 @@ inline void holdPowerRails() {
     digitalWrite(ce, ACTIVE.power.chargeEnableActiveHigh ? HIGH : LOW);
     gpio_hold_en(g);
   }
+#if FREEINK_DEVICE_TDECKPRO
+  // T-Deck Pro: the SX1262 (CS3) shares the display/SD SPI bus. Deselect it
+  // before any bus traffic, and keep the radio, GPS and A7682E modem powered
+  // down (enables GPIO46 / GPIO39 / GPIO41) until a later phase drives them.
+  if (ACTIVE.board == Board::LilyGoTDeckPro) {
+    pinMode(3, OUTPUT);
+    digitalWrite(3, HIGH);
+    for (const int en : {46, 39, 41}) {
+      pinMode(en, OUTPUT);
+      digitalWrite(en, LOW);
+    }
+  }
+#endif
 }
 
 // Rescue the SD power rail before first display use. A previous firmware's
