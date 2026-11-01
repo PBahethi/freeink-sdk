@@ -322,6 +322,7 @@ class InputManager {
   void applyTouchSample(bool touching, uint16_t rawX, uint16_t rawY, unsigned long now);
 #if FREEINK_TOUCH_CST3XX
   bool cst66xx = false;
+  uint8_t cstMissCount = 0;  // CST328 reads without the 0xAB marker while IRQ fired
 #endif
 
   enum class MultiTouchGestureState : uint8_t { Idle, Tracking, Blocked };

@@ -1986,9 +1986,19 @@ void InputManager::beginCst3xx() {
     touchDataEnabled = (Wire.endTransmission() == 0);
   }
   if (!touchDataEnabled) return;
+  // The CST3530 naps and NAKs I2C (LilyGo issue #37), so a single probe right
+  // after reset can miss it. Retry, preferring a moment when IRQ is asserted.
   static const uint8_t reg66[] = {0xD0, 0x07, 0x00, 0x00};
   uint8_t buf[9] = {};
-  if (cstTransfer(reg66, sizeof(reg66), buf, sizeof(buf))) {
+  bool probeRead = false;
+  for (int attempt = 0; attempt < 5 && !cst66xx; ++attempt) {
+    if (attempt > 0) {
+      const unsigned long waitStart = millis();
+      while (t.irq >= 0 && digitalRead(t.irq) != LOW && millis() - waitStart < 20) delay(1);
+      if (t.irq < 0) delay(20);
+    }
+    if (!cstTransfer(reg66, sizeof(reg66), buf, sizeof(buf))) continue;
+    probeRead = true;
     const uint8_t fingers = buf[3] & 0x0F;
     const uint8_t keys = buf[3] >> 4;
     if (fingers + keys <= 1) {
@@ -1998,6 +2008,9 @@ void InputManager::beginCst3xx() {
     }
   }
 #if defined(ENABLE_SERIAL_LOG)
+  esp_rom_printf("[touch] probe raw %02X %02X %02X %02X %02X %02X %02X %02X %02X (read=%d)\r\n", buf[0], buf[1],
+                 buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8], probeRead ? 1 : 0);
+  if (!cst66xx) esp_rom_printf("[touch] WARN: CST3530 probe failed; falling back to CST328 map\r\n");
   esp_rom_printf("[touch] Hynitron %s ready at 0x%02X\r\n", cst66xx ? "CST3530" : "CST328", t.i2cAddress);
 #endif
 }
@@ -2033,7 +2046,18 @@ void InputManager::pollCst3xx(const unsigned long now) {
     uint8_t buf[7] = {};
     if (!cstTransfer(reg, sizeof(reg), buf, sizeof(buf))) return;
     cstTransfer(ack, sizeof(ack), nullptr, 0);
-    if (buf[6] != 0xAB || buf[0] == 0xAB) return;  // no fresh report
+    if (buf[6] != 0xAB || buf[0] == 0xAB) {  // no fresh report
+      // IRQ fired but the CST328 map never shows its marker: this is likely a
+      // CST3530 the boot probe missed. Switch once.
+      if (t.irq >= 0 && buf[6] != 0xAB && ++cstMissCount >= 5) {
+        cst66xx = true;
+#if defined(ENABLE_SERIAL_LOG)
+        esp_rom_printf("[touch] CST328 marker missing x5 with IRQ; switching to CST3530\r\n");
+#endif
+      }
+      return;
+    }
+    cstMissCount = 0;
     const uint8_t fingers = buf[5] & 0x7F;
     if (fingers > 0 && !(buf[5] & 0x80)) {
       rawX = static_cast<uint16_t>((buf[1] << 4) | (buf[3] >> 4));
