@@ -89,8 +89,8 @@ void Uc8253TDeckDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* p
 
   initController(bus);
   if (fast) {
-    // Controller RAM still holds the previous frame (N2OCP copies new->old
-    // after each refresh); a host-side previous frame, when present, is exact.
+    // DTM1 holds the previous frame: written after every refresh (full: both
+    // planes; fast: re-seeded below). A host-side previous frame, when present, is exact.
     bus.cmd(CMD_PARTIAL_IN);
     bus.cmd(CMD_PARTIAL_WINDOW);
     const uint8_t win[] = {0x00, static_cast<uint8_t>((W - 1) | 0x07), 0x00,
@@ -108,6 +108,11 @@ void Uc8253TDeckDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     powerOn(bus);
     bus.cmd(CMD_DISPLAY_REFRESH);
     bus.waitBusy(" TDK_DRF_FAST");
+    // Re-seed the "old" plane with the frame now on the glass, as GxEPD2's
+    // writeImageAgain() does. The UC8253 does not copy new->old by itself; in
+    // single-buffer mode (prev == nullptr) the next fast refresh would diff
+    // against a stale frame and leave a ghosted double image.
+    writePlane(bus, CMD_DTM1, fb);
     bus.cmd(CMD_PARTIAL_OUT);
   } else {
     writePlane(bus, CMD_DTM1, fb);
