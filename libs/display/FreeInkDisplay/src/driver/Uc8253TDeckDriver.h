@@ -8,9 +8,11 @@
 // GxEPD2_310_GDEQ031T10 (GPL-3.0; only the command bytes are reused, no code):
 //   full  : 0x10 + 0x13 = frame, CDI 0x50=0x97, POWER ON, DRF 0x12
 //   fast  : PTIN 0x91 + window 0x90, 0x13 = frame, force temp 0xE0/0xE5=0x79,
-//           CDI 0x50=0xD7 (OTP differential), DRF, PTOUT 0x92
+//           CDI 0x50=0xD7 (OTP differential), DRF, PTOUT 0x92, POWER OFF,
+//           then soft reset + PTIN + window + 0x10 = frame + PTOUT (re-seed old)
 //   half  : full sequence with the "fast full" forced temperature (0xE5=0x5A)
-// A FAST refresh is promoted to FULL every kGhostClearInterval refreshes.
+// A FAST refresh is promoted to FULL every kGhostClearInterval (6) refreshes,
+// and the panel is powered off after every refresh.
 // Framebuffer geometry equals controller RAM (240x320), so no rotation.
 //
 // Selection: linked only when -DFREEINK_DRIVER_UC8253_TDECK (T-Deck Pro env).
@@ -38,6 +40,7 @@ class Uc8253TDeckDriver : public PanelDriver {
   void powerOn(EpdBus& bus);
   void powerOff(EpdBus& bus);
   void writePlane(EpdBus& bus, uint8_t command, const uint8_t* fb);
+  void beginPartial(EpdBus& bus);
 
   bool _powerOn = false;
   bool _hibernating = false;

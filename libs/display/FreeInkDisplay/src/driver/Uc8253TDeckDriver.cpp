@@ -23,7 +23,7 @@ constexpr uint8_t CMD_FORCE_TEMP = 0xE5;
 constexpr uint16_t W = 240;
 constexpr uint16_t H = 320;
 constexpr uint16_t WB = W / 8;  // 30
-constexpr uint8_t kGhostClearInterval = 20;
+constexpr uint8_t kGhostClearInterval = 6;
 }  // namespace
 
 uint32_t Uc8253TDeckDriver::spiHz() const {
@@ -74,6 +74,16 @@ void Uc8253TDeckDriver::writePlane(EpdBus& bus, uint8_t command, const uint8_t* 
   bus.endTxn();
 }
 
+void Uc8253TDeckDriver::beginPartial(EpdBus& bus) {
+  bus.cmd(CMD_PARTIAL_IN);
+  bus.cmd(CMD_PARTIAL_WINDOW);
+  // Whole panel: x 0..239 (byte aligned, end | 7), y 0..319, scan inside only.
+  const uint8_t win[] = {0x00, static_cast<uint8_t>((W - 1) | 0x07), 0x00,
+                         0x00, static_cast<uint8_t>((H - 1) >> 8),   static_cast<uint8_t>((H - 1) & 0xFF),
+                         0x01};
+  bus.data(win, sizeof(win));
+}
+
 void Uc8253TDeckDriver::begin(EpdBus& bus) {
   bus.reset(10);
   _hibernating = false;
@@ -89,14 +99,10 @@ void Uc8253TDeckDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* p
 
   initController(bus);
   if (fast) {
-    // DTM1 holds the previous frame: written after every refresh (full: both
-    // planes; fast: re-seeded below). A host-side previous frame, when present, is exact.
-    bus.cmd(CMD_PARTIAL_IN);
-    bus.cmd(CMD_PARTIAL_WINDOW);
-    const uint8_t win[] = {0x00, static_cast<uint8_t>((W - 1) | 0x07), 0x00,
-                           0x00, static_cast<uint8_t>((H - 1) >> 8),   static_cast<uint8_t>((H - 1) & 0xFF),
-                           0x01};
-    bus.data(win, sizeof(win));
+    // Same order as GxEPD2 GxEPD2_310_GDEQ031T10 (writeImage, refresh,
+    // writeImageAgain): DTM1 holds the frame on the glass (full: both planes;
+    // fast: re-seeded below). A host-side previous frame, when present, is exact.
+    beginPartial(bus);
     if (prev != nullptr) writePlane(bus, CMD_DTM1, prev);
     writePlane(bus, CMD_DTM2, fb);
     bus.cmd(CMD_CASCADE);
@@ -108,16 +114,24 @@ void Uc8253TDeckDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     powerOn(bus);
     bus.cmd(CMD_DISPLAY_REFRESH);
     bus.waitBusy(" TDK_DRF_FAST");
+    bus.cmd(CMD_PARTIAL_OUT);
+    // The panel idles unpowered between refreshes (LilyGo's factory firmware
+    // powers off after every flush); RAM writes need no high voltage.
+    powerOff(bus);
     // Re-seed the "old" plane with the frame now on the glass, as GxEPD2's
-    // writeImageAgain() does. The UC8253 does not copy new->old by itself; in
-    // single-buffer mode (prev == nullptr) the next fast refresh would diff
-    // against a stale frame and leave a ghosted double image.
+    // writeImageAgain() does: soft reset + panel setting first (GxEPD2 clears
+    // _init_display_done after every refresh), then partial in, window, DTM1,
+    // partial out. The UC8253 does not copy new->old by itself, so without this
+    // the next fast refresh diffs against a stale frame (ghosted double image).
+    initController(bus);
+    beginPartial(bus);
     writePlane(bus, CMD_DTM1, fb);
     bus.cmd(CMD_PARTIAL_OUT);
   } else {
     writePlane(bus, CMD_DTM1, fb);
     writePlane(bus, CMD_DTM2, fb);
-    if (mode == RefreshMode::Half) {
+    const bool half = mode == RefreshMode::Half;
+    if (half) {
       bus.cmd(CMD_CASCADE);
       bus.data(0x02);
       bus.cmd(CMD_FORCE_TEMP);
@@ -127,10 +141,11 @@ void Uc8253TDeckDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     bus.data(0x97);
     powerOn(bus);
     bus.cmd(CMD_DISPLAY_REFRESH);
-    bus.waitBusy(" TDK_DRF_FULL");
+    bus.waitBusy(half ? " TDK_DRF_HALF" : " TDK_DRF_FULL");
+    powerOff(bus);
     _initialRefresh = false;
   }
-  if (turnOff) powerOff(bus);
+  (void)turnOff;  // always idles powered off (above)
 }
 
 void Uc8253TDeckDriver::deepSleep(EpdBus& bus) {
