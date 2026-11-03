@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "MultiTouchGestureMath.h"
+#include "TouchSlop.h"
 
 #if FREEINK_CAP_TOUCH
 #include <Wire.h>
@@ -2082,15 +2083,22 @@ void InputManager::applyTouchSample(const bool touching, const uint16_t rawX, co
     if (t.flipX) touchPoint.x = static_cast<uint16_t>((t.rawMaxX - t.rawMinX) - touchPoint.x);
     if (t.flipY) touchPoint.y = static_cast<uint16_t>((t.rawMaxY - t.rawMinY) - touchPoint.y);
     touchPoint.timestamp = now;
+    freeink::input_detail::TouchSlop slop{touchMovedBeyondTapSlop, touchMovedBeyondTapReleaseSlop};
     if (!touchPressed) {
       touchPressedEvent = true;
       touchDownPoint = touchPoint;
-      touchMovedBeyondTapSlop = false;
+      slop.reset();
     }
     touchUpPoint = touchPoint;
-    const int dx = static_cast<int>(touchUpPoint.x) - static_cast<int>(touchDownPoint.x);
-    const int dy = static_cast<int>(touchUpPoint.y) - static_cast<int>(touchDownPoint.y);
-    if (absInt(dx) > TOUCH_TAP_SLOP_PX || absInt(dy) > TOUCH_TAP_SLOP_PX) touchMovedBeyondTapSlop = true;
+    // Both slops, as the GT911/FT backends track them. The release slop used to be
+    // left out here, so on the T-Deck Pro every swipe was also a tap at its
+    // touch-down point: list rows ate the scroll swipe, and a swipe starting on the
+    // status bar opened the control center.
+    slop.track(static_cast<int>(touchUpPoint.x) - static_cast<int>(touchDownPoint.x),
+               static_cast<int>(touchUpPoint.y) - static_cast<int>(touchDownPoint.y), TOUCH_TAP_SLOP_PX,
+               TOUCH_TAP_RELEASE_SLOP_PX);
+    touchMovedBeyondTapSlop = slop.beyondTap;
+    touchMovedBeyondTapReleaseSlop = slop.beyondRelease;
     touchPressed = true;
   } else {
     if (touchPressed) {

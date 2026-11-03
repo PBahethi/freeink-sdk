@@ -1570,7 +1570,8 @@ constexpr uint32_t MAX_FRAMEBUFFER_BYTES = cmax(
 // the LoRa radio (CS3 HIGH) before the SD card or panel touch the bus.
 // I2C (SDA13 SCL14): CST328/CST3530 touch 0x1A (INT12 RST38), BHI260AP 0x28,
 // TCA8418 keyboard 0x34, BQ27220 gauge 0x55, DRV2605 haptics 0x5A (v1.1),
-// BQ25896 charger 0x6B. Panel front light GPIO45. Only BOOT (GPIO0) is a GPIO key.
+// BQ25896 charger 0x6B. GPIO45 = panel backlight PWM (unlit panel; see frontlight
+// below). Only BOOT (GPIO0) is a GPIO key.
 // The panel is 240x320 portrait (keyboard below), so the framebuffer is too.
 constexpr BoardProfile LILYGO_TDECK_PRO = {
     Board::LilyGoTDeckPro,
@@ -1592,7 +1593,12 @@ constexpr BoardProfile LILYGO_TDECK_PRO = {
     // CST328/CST3530 report panel coordinates (0..239, 0..319). IRQ active-low;
     // CST3530 auto-sleeps, so reads are IRQ-gated (LilyGo T-Deck-Pro issue #37).
     {TouchController::Cst3xx, 13, 14, 12, 38, 0x1A, 0, 239, 0, 319, false, 0, true, false},
-    {45, 1000, 8, true},  // front light GPIO45, active-high PWM
+    // No front light: IO45 is the V1.1 board's backlight PWM (BL_PWM), but LilyGo
+    // ships V1.1 with an unlit panel and calls IO45 reserved (Xinyuan-LilyGO/
+    // T-Deck-Pro issue #32). Unassigned, so Frontlight.present() is false and no
+    // light UI is shown. Restore {45, 1000, 8, true} for a backlit panel.
+    // (The keyboard backlight is a separate LED_EN on IO42; not wired up here.)
+    {PIN_UNASSIGNED, 1000, 8, true},
     NO_AUDIO,
     NO_LEDS,
     NO_FLIP,
